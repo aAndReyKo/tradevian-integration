@@ -1,0 +1,19 @@
+[Unit]
+Description=MT5 Cloud Service - Tradevian Integration
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_USERNAME
+Group=YOUR_USERNAME
+WorkingDirectory=/home/YOUR_USERNAME/tradevian-integration/mt5-service
+Environment="PATH=/home/YOUR_USERNAME/tradevian-integration/mt5-service/venv/bin"
+ExecStart=/home/YOUR_USERNAME/tradevian-integration/mt5-service/venv/bin/python main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mt5-service
+
+[Install]
+WantedBy=multi-user.target
