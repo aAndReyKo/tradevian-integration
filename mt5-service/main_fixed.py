@@ -102,18 +102,12 @@ active_connections: Dict[str, dict] = {}
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize MT5 and Smart Queue on startup"""
+    """Initialize MT5 on startup"""
     if not mt5.initialize():
         logger.error("❌ MT5 initialization failed")
     else:
         logger.info("✅ MT5 Cloud Service started successfully")
         logger.info(f"📡 Listening on {os.getenv('HOST', '0.0.0.0')}:{os.getenv('PORT', 8000)}")
-
-    # Start Smart Queue worker
-    from smart_queue_service import smart_queue
-    import asyncio
-    asyncio.create_task(smart_queue.start_worker())
-    logger.info("🎯 Smart Queue Worker initialized")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -285,17 +279,40 @@ async def get_trade_history(
         logger.error(f"Login failed: {error}")
         raise HTTPException(status_code=401, detail=f"MT5 login failed: {error}")
 
-    # Calculate date range
+    # Force load account history
+    logger.info("📥 Forcing MT5 to load account history...")
+    account_info = mt5.account_info()
+    if account_info:
+        logger.info(f"✅ Account loaded: {account_info.login}, Balance: {account_info.balance}")
+
+    # Try to get deals with broader date range to force history load
+    logger.info("🔄 Attempting to retrieve full history...")
+    temp_from = datetime(2020, 1, 1)
+    temp_to = datetime.now()
+
+    # First request - this forces MT5 to load history
+    temp_deals = mt5.history_deals_get(temp_from, temp_to)
+    if temp_deals:
+        logger.info(f"✅ History loaded successfully: {len(temp_deals)} total deals found")
+    else:
+        logger.warning("⚠️ No history found even after force load attempt")
+
+    # Calculate actual date range for requested period
     from_date = datetime.now() - timedelta(days=request.days)
     to_date = datetime.now()
 
-    logger.info(f"Fetching deals from {from_date} to {to_date}")
+    logger.info(f"📅 Fetching deals from {from_date} to {to_date}")
 
-    # Get history deals
+    # Get history deals for requested period
     deals = mt5.history_deals_get(from_date, to_date)
 
-    if deals is None:
-        logger.warning("No deals found in history")
+    logger.info(f"🔍 Raw deals result: {deals}")
+    logger.info(f"🔍 Deals type: {type(deals)}")
+    if deals:
+        logger.info(f"🔍 Total deals in period: {len(deals)}")
+
+    if deals is None or len(deals) == 0:
+        logger.warning("No deals found in requested period")
         return {
             "success": True,
             "trades": [],
@@ -337,7 +354,7 @@ async def get_open_positions(
     credentials: MT5Credentials,
     api_key: str = Depends(verify_api_key)
 ):
-    """Get currently open positions (legacy endpoint - direct fetch)"""
+    """Get currently open positions"""
     logger.info(f"📈 Open positions request: {credentials.login}@{credentials.server}")
 
     if not mt5.initialize():
@@ -380,74 +397,6 @@ async def get_open_positions(
         "positions": formatted_positions,
         "count": len(formatted_positions)
     }
-
-
-class SmartQueueRequest(BaseModel):
-    """Request for Smart Queue position tracking"""
-    user_id: str
-    account_id: Optional[str] = None
-    login: int
-    password: str
-    server: str
-
-
-@app.post("/mt5/positions-smart")
-async def get_positions_smart_queue(
-    request: SmartQueueRequest,
-    api_key: str = Depends(verify_api_key)
-):
-    """
-    Get positions using Smart Queue
-    - Handles multiple users efficiently
-    - Tracks position changes
-    - Automatically detects and saves closed trades
-    - Returns cached data when available
-    """
-    logger.info(f"🎯 Smart Queue request: user={request.user_id}, login={request.login}")
-
-    from smart_queue_service import smart_queue
-
-    try:
-        positions = await smart_queue.get_positions(
-            user_id=request.user_id,
-            login=request.login,
-            password=request.password,
-            server=request.server,
-            account_id=request.account_id,
-            on_trade_closed=None  # Will be handled by frontend callback
-        )
-
-        return {
-            "success": True,
-            "positions": positions,
-            "count": len(positions),
-            "user_id": request.user_id
-        }
-
-    except Exception as e:
-        logger.error(f"Error in smart queue: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/mt5/closed-trades")
-async def get_closed_trades_smart(
-    request: SmartQueueRequest,
-    api_key: str = Depends(verify_api_key)
-):
-    """
-    Get closed trades detected by Smart Queue
-    This endpoint returns trades that were automatically detected and saved
-    """
-    from smart_queue_service import smart_queue
-
-    user_snapshots = smart_queue.position_snapshots.get(request.user_id, {})
-
-    return {
-        "success": True,
-        "message": "Smart Queue is tracking positions",
-        "tracked_positions": len(user_snapshots),
-        "user_id": request.user_id
-    }
-
 
 @app.post("/mt5/disconnect")
 async def disconnect_mt5(
